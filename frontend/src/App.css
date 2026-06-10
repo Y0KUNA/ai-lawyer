@@ -1,0 +1,35 @@
+.container {
+  width: 900px;
+  margin: auto;
+}
+
+.chat-window {
+  height: 600px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  padding: 20px;
+}
+
+.user {
+  text-align: right;
+  margin: 10px;
+}
+
+.assistant {
+  text-align: left;
+  margin: 10px;
+}
+
+.input-area {
+  display: flex;
+  margin-top: 10px;
+}
+
+input {
+  flex: 1;
+  padding: 10px;
+}
+
+button {
+  padding: 10px 20px;
+}
