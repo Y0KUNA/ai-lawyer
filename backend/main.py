@@ -7,17 +7,71 @@ import time
 from dotenv import load_dotenv
 import os
 import json
+from pathlib import Path
+# ── RAG: thêm 2 import này ──────────────────────────────────────────
+import chromadb
+from sentence_transformers import SentenceTransformer
+# ────────────────────────────────────────────────────────────────────
+
 print("=================================")
 print("RUNNING MY MAIN.PY")
 print("=================================")
 
-# load .env if present (should be valid KEY=VALUE format)
 load_dotenv()
+
+# ── RAG: khởi tạo 1 lần khi app start ───────────────────────────────
+BASE_DIR   = Path(__file__).parent.resolve()
+CHROMA_DIR = Path(os.getenv("CHROMA_PATH", BASE_DIR.parent / "rag" / "chroma_db"))
+# Resolve relative path so "../rag/chroma_db" hoạt động đúng
+if not CHROMA_DIR.is_absolute():
+    CHROMA_DIR = (BASE_DIR / CHROMA_DIR).resolve()
+
+_embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3"))
+_chroma      = chromadb.PersistentClient(path=str(CHROMA_DIR))
+_collection  = _chroma.get_collection("luat_vn")
+print("CHROMA_DIR:", CHROMA_DIR)  # thêm dòng này trước get_collection
+_collection = _chroma.get_collection("luat_vn")
+def retrieve_law_context(messages: list, n_results: int = 5) -> str:
+    """
+    Lấy câu hỏi cuối cùng của user, embed rồi tìm chunks luật liên quan.
+    Trả về chuỗi context để nhét vào system prompt.
+    """
+    # Lấy nội dung tin nhắn cuối cùng của user
+    user_query = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_query = msg.get("content", "")
+            break
+
+    if not user_query:
+        return ""
+
+    q_vec = _embed_model.encode(user_query).tolist()
+
+    results = _collection.query(
+        query_embeddings=[q_vec],
+        n_results=n_results,
+        where={"status": {"$ne": "het_hieu_luc"}},  # bỏ luật hết hiệu lực
+    )
+
+    # Fallback nếu filter trả về quá ít kết quả
+    if len(results["documents"][0]) < 2:
+        results = _collection.query(query_embeddings=[q_vec], n_results=n_results)
+
+    context_parts = []
+    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+        header = (
+            f"[{meta.get('loai_van_ban','')} {meta.get('so_hieu','')} "
+            f"— {meta.get('heading','')}]"
+        )
+        context_parts.append(f"{header}\n{doc}")
+
+    return "\n\n---\n\n".join(context_parts)
+# ────────────────────────────────────────────────────────────────────
 
 
 app = FastAPI()
 
-# Allow requests from the frontend dev server
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=".*",
@@ -25,13 +79,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 class ChatRequest(BaseModel):
     messages: list
 
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    # Try to load a JSON system prompt from env, otherwise use a simple default
     system_prompt_raw = os.getenv("SYSTEM_PROMPT")
     try:
         if system_prompt_raw:
@@ -51,8 +106,27 @@ def chat(req: ChatRequest):
             ),
         }
 
-    # Expect req.messages to be a list of message objects like {role, content}
-    messages = [SYSTEM_PROMPT, *req.messages]
+    # ── RAG: truy xuất context rồi gắn vào system prompt ────────────
+    law_context = retrieve_law_context(req.messages)
+    if law_context:
+        rag_note = (
+            "\n\n=== CÁC QUY ĐỊNH PHÁP LUẬT LIÊN QUAN ===\n"
+            f"{law_context}\n"
+            "==========================================\n"
+            "Hãy dựa vào các quy định trên để trả lời. "
+            "Trích dẫn số hiệu văn bản và điều khoản cụ thể khi có thể. "
+            "Nếu thông tin không đủ, hãy nói rõ thay vì bịa đặt."
+        )
+        # Tạo bản sao để không mutate object gốc
+        system_with_rag = {
+            "role": "system",
+            "content": SYSTEM_PROMPT["content"] + rag_note,
+        }
+    else:
+        system_with_rag = SYSTEM_PROMPT
+    # ────────────────────────────────────────────────────────────────
+
+    messages = [system_with_rag, *req.messages]  # ← thay SYSTEM_PROMPT bằng system_with_rag
 
     try:
         response = requests.post(
@@ -75,7 +149,6 @@ def chat(req: ChatRequest):
             for line in response.iter_lines(decode_unicode=True):
                 if not line:
                     continue
-
                 try:
                     chunk = json.loads(line)
                 except json.JSONDecodeError:
@@ -99,7 +172,7 @@ def chat(req: ChatRequest):
 def ping():
     return {"status": "ok"}
 
-print("===== ROUTES =====")
 
+print("===== ROUTES =====")
 for route in app.routes:
     print(route.path, route.methods)

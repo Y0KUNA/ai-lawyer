@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-06-11T16:44:05",
+  "total_files": 274,
+  "total_chunks": 25670,
+  "avg_chunks_per_file": 93.7,
+  "max_chunk_chars": 1500,
+  "overlap_chars": 150,
+  "by_status": {
+    "da_sua_doi": {
+      "files": 49,
+      "chunks": 3510,
+      "errors": 0
+    },
+    "dang_hieu_luc": {
+      "files": 80,
+      "chunks": 5948,
+      "errors": 0
+    },
+    "het_hieu_luc_mot_phan": {
+      "files": 145,
+      "chunks": 16212,
+      "errors": 0
+    }
+  },
+  "errors": []
+}
