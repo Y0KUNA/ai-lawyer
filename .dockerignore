@@ -1,0 +1,13 @@
+**/.git
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.env
+frontend/dist
+.gitignore
+*.md
+data/
+backend/fine-tune/
+File-word-24-van-ban-hop-nhat-cac-Luat/

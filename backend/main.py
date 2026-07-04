@@ -129,8 +129,9 @@ def chat(req: ChatRequest):
     messages = [system_with_rag, *req.messages]  # ← thay SYSTEM_PROMPT bằng system_with_rag
 
     try:
+        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
         response = requests.post(
-            "http://localhost:11434/api/chat",
+            f"{ollama_host}/api/chat",
             json={
                 "model": "gemma4:e2b",
                 "messages": messages,
