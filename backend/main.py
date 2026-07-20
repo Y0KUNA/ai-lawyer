@@ -8,11 +8,29 @@ from dotenv import load_dotenv
 import os
 import json
 from pathlib import Path
+from crew.src.lawyers.services.chroma_service import ChromaService
 # ── RAG: thêm 2 import này ──────────────────────────────────────────
 import chromadb
 from sentence_transformers import SentenceTransformer
 # ────────────────────────────────────────────────────────────────────
+# ── CREW: thêm import cho AI Lawyer Crew ────────────────────────────
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "crew" / "src"))
+from crew.src.lawyers.crew import AILawyerCrew
+# ────────────────────────────────────────────────────────────────────
+import logging
+from pathlib import Path
 
+Path("logs").mkdir(exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    handlers=[
+        logging.FileHandler("logs/crew.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 print("=================================")
 print("RUNNING MY MAIN.PY")
 print("=================================")
@@ -21,21 +39,33 @@ load_dotenv()
 
 # ── RAG: khởi tạo 1 lần khi app start ───────────────────────────────
 BASE_DIR   = Path(__file__).parent.resolve()
-CHROMA_DIR = Path(os.getenv("CHROMA_PATH", BASE_DIR.parent / "rag" / "chroma_db"))
-# Resolve relative path so "../rag/chroma_db" hoạt động đúng
+CHROMA_DIR = Path(os.getenv("CHROMA_PATH", BASE_DIR.parent / "chroma_db"))
+# Resolve relative path so "../chroma_db" hoạt động đúng
 if not CHROMA_DIR.is_absolute():
     CHROMA_DIR = (BASE_DIR / CHROMA_DIR).resolve()
 
-_embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3"))
-_chroma      = chromadb.PersistentClient(path=str(CHROMA_DIR))
-_collection  = _chroma.get_collection("luat_vn")
-print("CHROMA_DIR:", CHROMA_DIR)  # thêm dòng này trước get_collection
-_collection = _chroma.get_collection("luat_vn")
+_embed_model = None
+_chroma = None
+_collection = None
+
+try:
+    _embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3"))
+    ChromaService.initialize()
+    _collection = ChromaService.get_collection()
+    print("CHROMA_DIR:", CHROMA_DIR)
+    print("[OK] ChromaDB collection 'luat_vn' loaded successfully")
+except Exception as e:
+    print(f"[WARNING] Warning: Could not load ChromaDB collection: {e}")
+    print("  RAG will be disabled but chat will still work")
 def retrieve_law_context(messages: list, n_results: int = 5) -> str:
     """
     Lấy câu hỏi cuối cùng của user, embed rồi tìm chunks luật liên quan.
     Trả về chuỗi context để nhét vào system prompt.
     """
+    # Kiểm tra nếu ChromaDB không khả dụng
+    if _collection is None or _embed_model is None:
+        return ""
+    
     # Lấy nội dung tin nhắn cuối cùng của user
     user_query = ""
     for msg in reversed(messages):
@@ -46,27 +76,31 @@ def retrieve_law_context(messages: list, n_results: int = 5) -> str:
     if not user_query:
         return ""
 
-    q_vec = _embed_model.encode(user_query).tolist()
+    try:
+        q_vec = _embed_model.encode(user_query).tolist()
 
-    results = _collection.query(
-        query_embeddings=[q_vec],
-        n_results=n_results,
-        where={"status": {"$ne": "het_hieu_luc"}},  # bỏ luật hết hiệu lực
-    )
-
-    # Fallback nếu filter trả về quá ít kết quả
-    if len(results["documents"][0]) < 2:
-        results = _collection.query(query_embeddings=[q_vec], n_results=n_results)
-
-    context_parts = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        header = (
-            f"[{meta.get('loai_van_ban','')} {meta.get('so_hieu','')} "
-            f"— {meta.get('heading','')}]"
+        results = _collection.query(
+            query_embeddings=[q_vec],
+            n_results=n_results,
+            where={"status": {"$ne": "het_hieu_luc"}},  # bỏ luật hết hiệu lực
         )
-        context_parts.append(f"{header}\n{doc}")
 
-    return "\n\n---\n\n".join(context_parts)
+        # Fallback nếu filter trả về quá ít kết quả
+        if len(results["documents"][0]) < 2:
+            results = _collection.query(query_embeddings=[q_vec], n_results=n_results)
+
+        context_parts = []
+        for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+            header = (
+                f"[{meta.get('loai_van_ban','')} {meta.get('so_hieu','')} "
+                f"— {meta.get('heading','')}]"
+            )
+            context_parts.append(f"{header}\n{doc}")
+
+        return "\n\n---\n\n".join(context_parts)
+    except Exception as e:
+        print(f"[WARNING] Error retrieving law context: {e}")
+        return ""
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -83,6 +117,17 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     messages: list
+
+
+class CaseAnalysisRequest(BaseModel):
+    """Request model for AI Lawyer Crew analysis"""
+    case_description: str
+
+
+class CaseAnalysisResponse(BaseModel):
+    """Response model for AI Lawyer Crew analysis"""
+    analysis: str
+    status: str = "completed"
 
 
 @app.post("/chat")
@@ -172,6 +217,35 @@ def chat(req: ChatRequest):
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
+
+
+@app.post("/analyze")
+async def analyze_case(req: CaseAnalysisRequest):
+    try:
+        print("CASE:")
+        print(req.case_description)
+        print("\n" + "="*50)
+        print("ANALYZING CASE WITH AI LAWYER CREW")
+        print("="*50)
+        
+        crew = AILawyerCrew()
+        result = await crew.crew().kickoff_async(
+            inputs={"case_description": req.case_description}
+        )
+        
+        print("[OK] Analysis completed")
+        print("="*50 + "\n")
+        
+        return CaseAnalysisResponse(
+            analysis=str(result),
+            status="completed"
+        )
+    except Exception as e:
+        print(f"[ERROR] Error analyzing case: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analyzing case: {str(e)}"
+        )
 
 
 print("===== ROUTES =====")

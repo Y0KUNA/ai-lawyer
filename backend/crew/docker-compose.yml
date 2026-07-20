@@ -1,0 +1,14 @@
+services:
+  movie-adapter:
+    build: .
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./knowledge:/app/knowledge
+    
+    env_file:
+      - .env
+

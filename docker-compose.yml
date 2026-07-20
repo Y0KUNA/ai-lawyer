@@ -15,11 +15,11 @@ services:
       - "8000:8000"
     environment:
       OLLAMA_HOST: http://ollama:11434
-      CHROMA_PATH: /app/rag/chroma_db
+      CHROMA_PATH: /app/chroma_db
       EMBED_MODEL: BAAI/bge-m3
       HF_HOME: /root/.cache/huggingface
     volumes:
-      - ./rag/chroma_db:/app/rag/chroma_db:ro
+      - ./chroma_db:/app/rag/chroma_db
       - huggingface_cache:/root/.cache/huggingface
     depends_on:
       - ollama

@@ -58,7 +58,6 @@ export default function App() {
     setLoading(true);
     try {
       const active = conversations.find((c) => c.id === conversationId) || { messages: [] };
-      const payload = { messages: [...active.messages, userMsg] };
 
       setConversations((prev) =>
         prev.map((c) =>
@@ -80,7 +79,8 @@ export default function App() {
       );
 
       const apiBase = import.meta.env.VITE_API_URL || "http://localhost:8000";
-      const res = await fetch(`${apiBase}/chat`, {
+      const payload = { case_description: text };
+      const res = await fetch(`${apiBase}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -90,33 +90,23 @@ export default function App() {
         throw new Error(await res.text());
       }
 
-      if (!res.body) {
-        throw new Error("Response stream is empty.");
-      }
+      const data = await res.json();
+      const assistantContent = data.analysis || "Phân tích không có nội dung";
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        if (!chunk) continue;
-
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.id === conversationId
-              ? {
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === assistantMsgId ? { ...m, content: (m.content || "") + chunk } : m
-                  ),
-                }
-              : c
-          )
-        );
-      }
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId
+            ? {
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === assistantMsgId
+                    ? { ...m, content: assistantContent }
+                    : m
+                ),
+              }
+            : c
+        )
+      );
     } catch (err) {
       console.error(err);
       setConversations((prev) =>

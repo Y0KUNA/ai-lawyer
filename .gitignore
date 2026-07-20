@@ -180,4 +180,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 File-word-24-van-ban-hop-nhat-cac-Luat/
-chroma_db/
+.env
+__pycache__/
+.DS_Store
+.venv/
+*.jsonl
+*.json
+*.txt

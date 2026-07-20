@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 # ── Config ──────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
-file_path = BASE_DIR.parent / "data" / "data" / "rag_chunks" / "rag_corpus.jsonl"
+file_path = BASE_DIR.parent / "data" / "rag_chunks" / "rag_corpus.jsonl"
 JSONL_PATH   = file_path
-CHROMA_PATH  = "./chroma_db"
-CHECKPOINT_F = "./index_checkpoint.txt"  # lưu chunk_id đã index
+CHROMA_PATH  = BASE_DIR.parent / "chroma_db"
+CHECKPOINT_F = "index_checkpoint.txt"  # lưu chunk_id đã index
 BATCH_SIZE   = 32                         # nhỏ hơn để tránh lỗi compaction
 # ────────────────────────────────────────────────────────────────────
 

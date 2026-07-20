@@ -11,3 +11,11 @@ frontend/dist
 data/
 backend/fine-tune/
 File-word-24-van-ban-hop-nhat-cac-Luat/
+.venv
+__pycache__
+*.pyc
+.git
+.gitignore
+.env
+dist
+build

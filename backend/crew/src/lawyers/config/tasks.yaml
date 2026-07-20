@@ -1,0 +1,220 @@
+extract_case_facts:
+  description: >
+    Read the following case carefully.
+
+    CASE:
+
+    {case_description}
+
+    Extract:
+
+    • Parties
+
+    • Timeline
+
+    • Important Facts
+
+    • Claims
+
+    • Evidence
+
+    • Missing Facts
+
+    Never identify legal issues.
+
+    Never cite laws.
+
+  expected_output: |
+    # Case Facts
+
+    ## Parties
+
+    ## Timeline
+
+    ## Important Facts
+
+    ## Claims
+
+    ## Evidence
+
+    ## Missing Facts
+
+  agent: case_analyzer
+
+
+identify_legal_issues:
+  description: >
+    Based on the extracted facts,
+    identify every legal issue requiring legal analysis.
+
+    Do not answer the issues.
+
+    Do not cite legal provisions.
+
+  expected_output: |
+    # Legal Issues
+
+    ## Issue
+
+    Description
+
+    Related Facts
+
+    Priority
+
+  context:
+    - extract_case_facts
+
+  agent: issue_identifier
+
+
+research_legal_authorities:
+  description: >
+    For every legal issue:
+
+    Use the retrieval pipeline.
+
+    The pipeline includes:
+
+    Query Expansion
+
+    Semantic Retrieval
+
+    HyDE Retrieval
+
+    Internal Legal Database
+
+    External Legal Search if necessary
+
+    Citation Verification
+
+    Return only verified legal authorities.
+
+  expected_output: |
+    # Legal Authorities
+
+    ## Issue
+
+    Retrieved Authorities
+
+    Sources
+
+    Confidence
+
+    Coverage
+
+  context:
+    - identify_legal_issues
+
+  agent: legal_researcher
+
+
+apply_irac:
+  description: >
+    Using the case facts, legal issues, and legal authorities provided above
+    in context, analyze every issue using IRAC.
+
+    Use only verified authorities.
+
+    Clearly distinguish:
+
+    Issue
+
+    Rule
+
+    Application
+
+    Conclusion
+
+  expected_output: |
+    # IRAC Analysis
+
+    ## Issue
+
+    ## Rule
+
+    ## Application
+
+    ## Conclusion
+
+  context:
+    - extract_case_facts
+    - identify_legal_issues
+    - research_legal_authorities
+
+  agent: legal_reasoner
+
+
+review_analysis:
+  description: >
+    Review the IRAC legal analysis provided above in context.
+
+    Check:
+
+    factual accuracy
+
+    legal authority
+
+    logical consistency
+
+    unsupported reasoning
+
+    missing issues
+
+    Return exactly one status.
+
+  expected_output: |
+    STATUS:
+
+    PASS
+
+    or
+
+    RESEARCH_AGAIN
+
+    or
+
+    REASON_AGAIN
+
+    Findings:
+
+    ...
+
+  context:
+    - apply_irac
+
+  agent: legal_reviewer
+
+
+write_legal_opinion:
+  description: >
+    Using the reviewed IRAC analysis provided above in context, and only
+    verified facts/authorities contained within it, produce the final legal opinion
+
+    Use only:
+
+    verified facts
+
+    verified authorities
+
+    reviewed reasoning
+
+  expected_output: |
+    # LEGAL OPINION
+
+    ## Executive Summary
+
+    ## Questions Presented
+
+    ## Legal Analysis
+
+    ## Risks
+
+    ## Recommendations
+
+    ## Conclusion
+
+  context:
+    - review_analysis
+
+  agent: legal_opinion_writer
