@@ -20,9 +20,9 @@ class QueryExpansionTool(BaseTool):
         base = issue.strip()
         queries = [base]
         if n_queries >= 2:
-            queries.append(f"{base} văn bản pháp luật")
+            queries.append(f"{base} điều luật")
         if n_queries >= 3:
-            queries.append(f"{base} án lệ")
+            queries.append(f"{base} bộ luật")
         # pad with slight variations if requested
         i = 3
         while len(queries) < n_queries:

@@ -31,6 +31,8 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 print("=================================")
 print("RUNNING MY MAIN.PY")
 print("=================================")

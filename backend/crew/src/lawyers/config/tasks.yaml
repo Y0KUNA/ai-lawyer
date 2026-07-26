@@ -1,220 +1,120 @@
-extract_case_facts:
-  description: >
-    Read the following case carefully.
-
-    CASE:
-
-    {case_description}
-
-    Extract:
-
-    • Parties
-
-    • Timeline
-
-    • Important Facts
-
-    • Claims
-
-    • Evidence
-
-    • Missing Facts
-
-    Never identify legal issues.
-
-    Never cite laws.
-
-  expected_output: |
-    # Case Facts
-
-    ## Parties
-
-    ## Timeline
-
-    ## Important Facts
-
-    ## Claims
-
-    ## Evidence
-
-    ## Missing Facts
-
-  agent: case_analyzer
-
-
+---
+analyze_legal_request:
+  description: "Phân tích yêu cầu pháp lý sau của người dùng: {case_description}.\n \n    Thực
+    hiện các bước sau:\n    1. Đọc và hiểu toàn bộ nội dung yêu cầu của người dùng.\n
+    \   2. Trích xuất: các bên liên quan, mốc thời gian, sự kiện chính, yêu cầu\n
+    \      của mỗi bên, chứng cứ hiện có, và thông tin còn thiếu THỰC SỰ.\n    3.
+    Với mỗi câu có yếu tố phủ định hoặc quan hệ hai chiều (ai trả tiền cho\n       ai,
+    ai biết/không biết, ai đồng ý/không đồng ý), sao chép lại ĐÚNG\n       chiều như
+    trong văn bản gốc — không diễn giải ngược.\n    4. Sau khi viết xong, đọc lại
+    toàn bộ bản nháp, đối chiếu từng câu với\n       nguyên văn yêu cầu của người
+    dùng để phát hiện và sửa mọi trường hợp\n       đảo ngược quan hệ trước khi nộp
+    kết quả.\n    5. KHÔNG liệt các thông tin đã có sẵn trong yêu cầu (số tiền cọc,
+    mức\n       phạt, ai ký, ai đồng ý/không đồng ý) vào mục \"Thông tin còn thiếu\".\n
+    \   6. KHÔNG liệt các câu hỏi pháp lý (có cần công chứng không, ai chịu\n       trách
+    nhiệm) vào mục \"Thông tin còn thiếu\" — đây là việc của các\n       bước sau,
+    không phải của bước này."
+  expected_output: " Bản ghi fact có cấu trúc, gồm: Các bên, Mốc thời gian, Sự kiện
+    chính,\n    Yêu cầu của các bên, Chứng cứ, Thông tin còn thiếu (chỉ liệt thông
+    tin\n    thực sự không có trong đề bài). Không diễn giải luật, không kết luận.\n "
+  agent: legal_request_analyzer
 identify_legal_issues:
-  description: >
-    Based on the extracted facts,
-    identify every legal issue requiring legal analysis.
-
-    Do not answer the issues.
-
-    Do not cite legal provisions.
-
-  expected_output: |
-    # Legal Issues
-
-    ## Issue
-
-    Description
-
-    Related Facts
-
-    Priority
-
+  description: "  Dựa trên kết quả phân tích yêu cầu từ bước trước, thực hiện:\n    1.
+    Nếu LOẠI B (tình huống có tranh chấp đặt cọc/phạt cọc): xác định toàn\n       bộ
+    vấn đề pháp lý phát sinh, viết dưới dạng câu hỏi YES/NO hoặc\n       WHO/HOW-MUCH.\n
+    \   2. Đối chiếu từng cặp vấn đề: nếu hai vấn đề sẽ được giải quyết bằng\n       CÙNG
+    một phép suy luận pháp lý cốt lõi (dù diễn đạt khác nhau, dù\n       nhắm đến
+    các khoản tiền khác nhau), phải gộp lại thành MỘT vấn đề duy\n       nhất có các
+    phần con, không tách rời.\n    3. Trích nguyên văn câu hỏi của người dùng; đảm
+    bảo có ít nhất một vấn đề\n       trả lời trực tiếp cho mỗi câu hỏi đó.\n    4.
+    Với tình huống đặt cọc-phạt cọc, LUÔN có một vấn đề riêng hỏi: \"Bên\n       nào
+    là nguyên nhân gốc khiến giao dịch không thể hoàn tất — phân biệt\n       rõ với
+    bên thực hiện hành động từ chối sau cùng?\"\n    5. Gán độ ưu tiên High cho vấn
+    đề nào là điều kiện tiên quyết để trả lời\n       câu hỏi gốc của người dùng,
+    không gán theo loại vấn đề.\n    6. Không trích luật, không đưa kết luận ở bước
+    này.\n "
+  expected_output: |2-
+     Danh sách các vấn đề pháp lý (không trùng lặp về mặt nội dung pháp lý),
+        mỗi vấn đề gồm: Mô tả (dạng câu hỏi xác định), Sự kiện liên quan, Độ ưu
+        tiên. Không có kết luận hay trích dẫn luật.
+  agent: legal_issue_identifier
   context:
-    - extract_case_facts
-
-  agent: issue_identifier
-
-
-research_legal_authorities:
-  description: >
-    For every legal issue:
-
-    Use the retrieval pipeline.
-
-    The pipeline includes:
-
-    Query Expansion
-
-    Semantic Retrieval
-
-    HyDE Retrieval
-
-    Internal Legal Database
-
-    External Legal Search if necessary
-
-    Citation Verification
-
-    Return only verified legal authorities.
-
-  expected_output: |
-    # Legal Authorities
-
-    ## Issue
-
-    Retrieved Authorities
-
-    Sources
-
-    Confidence
-
-    Coverage
-
-  context:
-    - identify_legal_issues
-
+  - analyze_legal_request
+research_relevant_laws:
+  description: |2-
+     Với từng vấn đề pháp lý đã xác định, dùng công cụ tìm kiếm để:
+        1. Tìm và XÁC MINH (không dựa vào trí nhớ) số điều luật, tên văn bản
+           pháp luật liên quan (Bộ luật Dân sự 2015, Luật Hôn nhân và Gia đình
+           2014, Luật Đất đai, v.v.).
+        2. Với mỗi căn cứ tìm được, ghi rõ: số điều, văn bản nguồn, và PHẠM VI ÁP
+           DỤNG cụ thể — đặc biệt phân biệt rõ quy định áp dụng cho HỢP ĐỒNG ĐẶT
+           CỌC (biện pháp bảo đảm) và quy định áp dụng cho HỢP ĐỒNG MUA BÁN/CHUYỂN
+           NHƯỢNG BẤT ĐỘNG SẢN (hợp đồng chính) — đây là hai loại hợp đồng có yêu
+           cầu hình thức khác nhau, không được áp dụng lẫn cho nhau.
+        3. Nếu không xác minh được số điều cụ thể qua tìm kiếm, phải nói rõ
+           "chưa xác minh được", không tự suy ra từ trí nhớ.
+        4. Không thực hiện suy luận hay áp dụng luật vào tình huống ở bước này.
+  expected_output: |-
+    Danh sách căn cứ pháp lý cho từng vấn đề, mỗi căn cứ gồm: số điều/văn
+        bản, nội dung tóm tắt, phạm vi áp dụng cụ thể (loại hợp đồng/loại giao
+        dịch nào). Không có phân tích áp dụng vào vụ việc.
   agent: legal_researcher
-
-
-apply_irac:
-  description: >
-    Using the case facts, legal issues, and legal authorities provided above
-    in context, analyze every issue using IRAC.
-
-    Use only verified authorities.
-
-    Clearly distinguish:
-
-    Issue
-
-    Rule
-
-    Application
-
-    Conclusion
-
-  expected_output: |
-    # IRAC Analysis
-
-    ## Issue
-
-    ## Rule
-
-    ## Application
-
-    ## Conclusion
-
   context:
-    - extract_case_facts
-    - identify_legal_issues
-    - research_legal_authorities
+  - analyze_legal_request
+  - identify_legal_issues
+apply_irac_legal_reasoning:
+  description: "  Với mỗi vấn đề pháp lý, áp dụng khung IRAC (Issue - Rule - Application
+    -\n    Conclusion) chỉ dựa trên fact từ bước 1 và luật từ bước 3.\n \n    Trước
+    khi viết Application/Conclusion cho mỗi vấn đề:\n    1. Liệt lại chính xác các
+    fact sẽ dùng, đối chiếu xem có xuất hiện đúng\n       như vậy trong kết quả của
+    Legal Request Analyzer không. Nếu định\n       dùng một \"khoảng trống thông tin\"
+    (ví dụ: \"điều khoản chưa rõ\") mà\n       thông tin đó KHÔNG nằm trong mục Thông
+    tin còn thiếu của bước 1, thì\n       coi như thông tin đó ĐÃ BIẾT, không được
+    viện là còn thiếu.\n    2. Khi xác định bên có lỗi/nguyên nhân: KHÔNG mặc định
+    quy lỗi cho bên\n       thực hiện hành động từ chối/phản ứng sau cùng. Truy ngược
+    nguyên\n       nhân: nếu hành động từ chối của một bên là phản ứng hợp lý, trực\n
+    \      tiếp trước việc bên kia không đáp ứng được điều kiện tiên quyết đã\n       cam
+    kết (ví dụ: không có đủ quyền định đoạt tài sản đã hứa bán), thì\n       bên gây
+    ra sự việc trước đó mới là nguyên nhân gốc, không phải bên\n       phản ứng. Viết
+    rõ một câu xác định: bên nào là nguyên nhân gốc, bên\n       nào chỉ đang phản
+    ứng — trước khi kết luận về trách nhiệm.\n    3. Mục Conclusion là BẮT BUỘC, phải
+    trả lời dứt khoát (bên nào, số tiền\n       bao nhiêu, có/không) — không viết
+    \"còn tùy\" trừ khi bước 3 xác nhận\n       không tìm được căn cứ pháp lý hoặc
+    bước 1 xác nhận thiếu fact quan\n       trọng. Sự thận trọng chung chung không
+    phải lý do hợp lệ để né kết\n       luận.\n    4. Không áp dụng nhầm quy định
+    của loại hợp đồng này cho loại hợp đồng\n       khác (đặt cọc và mua bán).\n "
+  expected_output: |-
+    Phan tich phap ly day du bang tieng Viet:
 
-  agent: legal_reasoner
-
-
-review_analysis:
-  description: >
-    Review the IRAC legal analysis provided above in context.
-
-    Check:
-
-    factual accuracy
-
-    legal authority
-
-    logical consistency
-
-    unsupported reasoning
-
-    missing issues
-
-    Return exactly one status.
-
-  expected_output: |
-    STATUS:
-
-    PASS
-
-    or
-
-    RESEARCH_AGAIN
-
-    or
-
-    REASON_AGAIN
-
-    Findings:
-
-    ...
-
+    **Neu LOAI B**: Phân tích IRAC đầy đủ cho từng vấn đề, mỗi phân tích có mục Conclusion
+        dứt khoát, kèm câu xác định rõ bên nào là nguyên nhân gốc nếu vấn đề liên
+        quan đến lỗi/trách nhiệm.
+    **Neu LOAI A**: Giai trinh phap luat co cau truc, de hieu, co vi du minh hoa (neu can)
+  agent: irac_legal_reasoning_specialist
   context:
-    - apply_irac
-
-  agent: legal_reviewer
-
-
-write_legal_opinion:
-  description: >
-    Using the reviewed IRAC analysis provided above in context, and only
-    verified facts/authorities contained within it, produce the final legal opinion
-
-    Use only:
-
-    verified facts
-
-    verified authorities
-
-    reviewed reasoning
-
-  expected_output: |
-    # LEGAL OPINION
-
-    ## Executive Summary
-
-    ## Questions Presented
-
-    ## Legal Analysis
-
-    ## Risks
-
-    ## Recommendations
-
-    ## Conclusion
-
+  - analyze_legal_request
+  - identify_legal_issues
+  - research_relevant_laws
+verify_and_synthesize_legal_response:
+  description: " Kiểm duyệt toàn bộ chuỗi phân tích trước khi tổng hợp thành câu trả
+    lời\n    cuối cùng cho người dùng. Từ chối và yêu cầu làm lại bước tương ứng nếu:\n
+    \   - Có fact trong kết luận cuối mâu thuẫn hoặc không xuất hiện trong kết\n      quả
+    của Legal Request Analyzer (đặc biệt: \"thông tin chưa tiết lộ\" bịa\n      ra
+    trong khi đề bài đã nêu rõ).\n    - Việc quy lỗi/nguyên nhân dựa trên bên hành
+    động sau cùng thay vì bên\n      gây ra nguyên nhân gốc — đây là lỗi đã từng xảy
+    ra, phải kiểm tra\n      riêng biệt.\n    - Còn hedging ở chỗ mà fact đã đủ để
+    kết luận rõ ràng.\n    - Trích dẫn luật không khớp với những gì Legal Researcher
+    đã xác minh.\n    - Câu trả lời cuối không giải quyết trực tiếp câu hỏi gốc của
+    người dùng.\n \n    Sau khi kiểm duyệt đạt, viết câu trả lời cuối theo đúng cấu
+    trúc:\n    1. Kết luận trực tiếp — 2-4 câu, ngôn ngữ đơn giản, trả lời dứt khoát\n
+    \      câu hỏi của người dùng.\n    2. Căn cứ pháp lý — áp dụng đúng loại hợp
+    đồng.\n    3. Hệ quả thực tế — số tiền/nghĩa vụ/bước tiếp theo cụ thể.\n    4.
+    Lưu ý — chỉ nêu điểm còn thực sự chưa chắc chắn, không được làm loãng\n       kết
+    luận chính ở mục 1."
+  expected_output: "Bản tư vấn pháp lý hoàn chỉnh cho người dùng, mở đầu bằng kết
+    luận dứt\n    khoát, có căn cứ pháp lý đúng phạm vi áp dụng, hệ quả thực tế cụ
+    thể, và\n    lưu ý không mâu thuẫn với kết luận chính.\n "
+  agent: legal_verification_and_synthesis_specialist
   context:
-    - review_analysis
-
-  agent: legal_opinion_writer
+  - apply_irac_legal_reasoning
+  - research_relevant_laws

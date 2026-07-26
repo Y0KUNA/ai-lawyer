@@ -1,543 +1,674 @@
 """
-chunk_laws_hf.py — Chia chunk văn bản pháp luật từ dataset HuggingFace
-                    th1nhng0/vietnamese-legal-documents cho RAG
+chunk_laws_uts_v2_fixed.py
+Corrected version - parses Vietnamese legal documents into RAG-ready,
+ChromaDB-compatible chunks.
 
-Khác với bản gốc (đọc file .doc/.docx cục bộ), script này TẢI TRỰC TIẾP
-văn bản từ HuggingFace Hub:
-
-    metadata      — 153k văn bản, 16 trường metadata (số hiệu, ngày ban hành,
-                    cơ quan ban hành, tình trạng hiệu lực, ...)
-    content       — ~149k văn bản có nội dung HTML đầy đủ (join theo `id`)
-    relationships — quan hệ giữa các văn bản (sửa đổi, thay thế, viện dẫn, ...)
-
-Nguồn: https://huggingface.co/datasets/th1nhng0/vietnamese-legal-documents
-
-Output:
-    data/rag_chunks/
-        rag_corpus.jsonl  — mỗi dòng là 1 chunk, sẵn để embed
-        _stats.json       — thống kê tổng quan
-
-Cài đặt:
-    pip install datasets huggingface_hub pyarrow beautifulsoup4 lxml pandas tqdm
-
-Lưu ý kỹ thuật: config 'content' và 'relationships' được đọc TRỰC TIẾP từ
-file parquet bằng pyarrow (không qua `datasets(streaming=True)`), vì cột
-`content_html` là kiểu `large_string` — khi `datasets` ép về kiểu `string`
-(offset int32) sẽ báo lỗi:
-    pyarrow.lib.ArrowInvalid: Failed casting from large_string to string:
-    input array too large
-Đọc thẳng bằng pyarrow giữ nguyên kiểu large_string nên tránh được lỗi này.
+Fixes applied (see accompanying explanation):
+ 1. Added missing imports (hashlib, json, time, Counter) at the top.
+ 2. Added missing MAX_CHUNK_CHARS constant.
+ 3. Added missing build_metadata() function, with FLAT metadata
+    (str/int/float only) so it can be inserted directly into ChromaDB
+    (nested dict/list values are not supported by Chroma metadata).
+ 4. Clause/Point dataclasses now have safe defaults and are built with
+    an accumulating string instead of a list-that-was-never-joined.
+ 5. Removed the buggy "join only after the whole loop ends" code that
+    silently corrupted every clause/point except the very last one
+    parsed. Content is now finalized correctly, clause by clause.
+ 6. Fixed Point handling (`point.text` did not exist -> AttributeError).
+ 7. Fixed a possible infinite loop in split_soft() when a newline/period
+    was found very close to `start`.
 """
+from __future__ import annotations
 
 import hashlib
 import json
 import re
 import time
-import unicodedata
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-import pyarrow.parquet as pq
-from bs4 import BeautifulSoup
 from datasets import load_dataset
-from huggingface_hub import HfApi, hf_hub_download
-from tqdm import tqdm
 
-# ─── CẤU HÌNH ─────────────────────────────────────────────────────────────────
-OUTPUT_DIR = Path("data/rag_chunks")
-MAX_CHUNK_CHARS = 1500   # Độ dài tối đa mỗi chunk (ký tự)
-OVERLAP_CHARS   = 150    # Overlap giữa các chunk
+# ============================================================
+# CONFIG
+# ============================================================
+DATASET_NAME = "undertheseanlp/UTS_VLC"
+SPLIT = "2026"
 
-# Chỉ lấy các loại văn bản dưới đây. Đặt = None để lấy TẤT CẢ loại văn bản.
-LOAI_VAN_BAN_FILTER = ["Luật", "Bộ luật"]
-
-# Giới hạn số văn bản xử lý (debug nhanh). Đặt None để chạy full.
+# Anchor to this script's location, not the current working directory, so
+# the output folder is always in the same place regardless of where/how
+# you launch the script (terminal, IDE run button, etc.).
+BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / "rag_chunks_uts_v2"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MAX_DOCS = None
 
-# Có kéo thêm bảng quan hệ (sửa đổi / thay thế / viện dẫn) để làm giàu
-# metadata "sua_doi_luat" hay không. Bật lên sẽ chậm hơn một chút vì phải
-# quét qua config `relationships` (898k dòng, streaming).
-INCLUDE_RELATIONSHIPS = True
+# Max characters for an article to be kept as a single chunk before
+# it gets split at clause/point level.
+MAX_CHUNK_CHARS = 1200
 
-DATASET_NAME = "vohuutridung/vietnamese-legal-documents"
-
-# Map tình trạng hiệu lực (tiếng Việt, tự do) → mã trạng thái chuẩn hoá.
-# Nếu gặp giá trị lạ không có trong map, sẽ tự động "slugify" chuỗi gốc.
-STATUS_MAP = {
-    "còn hiệu lực":              "dang_hieu_luc",
-    "hết hiệu lực toàn bộ":      "het_hieu_luc_toan_bo",
-    "hết hiệu lực một phần":     "het_hieu_luc_mot_phan",
-    "chưa có hiệu lực":          "chua_co_hieu_luc",
-    "ngưng hiệu lực":            "ngung_hieu_luc",
-    "đã bị sửa đổi":             "da_sua_doi",
-    "đã bị sửa đổi, bổ sung":    "da_sua_doi",
-    "đã bị thay thế":            "da_thay_the",
-    "không xác định":            "khong_xac_dinh",
+TYPE_MAP = {
+    "constitution": "Hiến pháp",
+    "code": "Bộ luật",
+    "law": "Luật",
 }
-# ──────────────────────────────────────────────────────────────────────────────
+STATUS_MAP = {
+    "2026": "verified",
+    "2026_01": "unverified",
+    "2023": "historical",
+    "2021": "historical",
+}
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# ============================================================
+# REGEX
+# ============================================================
+RE_CHAPTER = re.compile(r"^Chương\s+([IVXLCDM0-9]+)\.?\s*(.*)$", re.IGNORECASE)
+RE_SECTION = re.compile(r"^Mục\s+(\d+)\.?\s*(.*)$", re.IGNORECASE)
+RE_ARTICLE = re.compile(r"^Điều\s+(\d+)\.?\s*(.*)$", re.IGNORECASE)
+RE_CLAUSE = re.compile(r"^(\d+)\.\s*(.*)$")
+RE_POINT = re.compile(r"^([a-zđ])\)\s*(.*)$", re.IGNORECASE)
+RE_HEADER = re.compile(r"^\*\*(.+?)\:\*\*\s*(.*)$")
 
-
-def slugify(text: str) -> str:
-    """Chuyển chuỗi tiếng Việt bất kỳ → snake_case không dấu, dùng làm mã trạng thái fallback."""
-    if not text:
-        return "khong_ro"
-    text = text.replace("Đ", "D").replace("đ", "d")
-    text = unicodedata.normalize("NFD", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
-    text = re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_").lower()
-    return text or "khong_ro"
-
-
-def map_status(tinh_trang_hieu_luc: str) -> str:
-    if not tinh_trang_hieu_luc:
-        return "khong_xac_dinh"
-    key = tinh_trang_hieu_luc.strip().lower()
-    return STATUS_MAP.get(key, slugify(tinh_trang_hieu_luc))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 1: TẢI DATASET TỪ HUGGINGFACE — metadata, content, (relationships)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def load_metadata_df():
-    print("→ Tải config 'metadata' ...")
-    ds = load_dataset(DATASET_NAME, "metadata", split="data")
-    df = ds.to_pandas()
-    df["id"] = df["id"].astype(str)
-    print(f"  {len(df):,} văn bản (trước khi lọc)")
-    return df
+# ============================================================
+# DATA MODEL
+# ============================================================
+@dataclass
+class Point:
+    point: str
+    content: str = ""
 
 
-def filter_metadata_df(df):
-    if LOAI_VAN_BAN_FILTER:
-        df = df[df["loai_van_ban"].isin(LOAI_VAN_BAN_FILTER)]
-        print(f"  → còn {len(df):,} văn bản sau khi lọc loai_van_ban={LOAI_VAN_BAN_FILTER}")
+@dataclass
+class Clause:
+    number: int
+    title: str
+    content: str = ""
+    points: List[Point] = field(default_factory=list)
+
+
+@dataclass
+class Article:
+    number: int
+    title: str
+    chapter: str = ""
+    section: str = ""
+    intro: List[str] = field(default_factory=list)
+    clauses: List[Clause] = field(default_factory=list)
+
+
+@dataclass
+class LawDocument:
+    law_code: str
+    law_name: str
+    document_type: str
+    effective_date: str = ""
+    issue_date: str = ""
+    english_name: str = ""
+    status: str = ""
+    articles: List[Article] = field(default_factory=list)
+
+
+# ============================================================
+# HEADER
+# ============================================================
+HEADER_MAP = {
+    "số hiệu": "law_code",
+    "ngày hiệu lực": "effective_date",
+    "ngày ban hành": "issue_date",
+    "english": "english_name",
+}
+
+
+def split_header(content: str):
+    parts = content.split("\n---\n", 1)
+    if len(parts) == 1:
+        return {}, content
+    header, body = parts
+    meta = {}
+    for line in header.splitlines():
+        m = RE_HEADER.match(line.strip())
+        if not m:
+            continue
+        key = m.group(1).strip().lower()
+        key = HEADER_MAP.get(key, key)
+        meta[key] = m.group(2).strip()
+    return meta, body
+
+
+# ============================================================
+# MARKDOWN CLEANER
+# ============================================================
+def markdown_to_text(md: str):
+    md = re.sub(r"^#{1,6}\s*", "", md, flags=re.MULTILINE)
+    md = re.sub(r"\*\*(.*?)\*\*", r"\1", md)
+    md = re.sub(r"\*(.*?)\*", r"\1", md)
+    md = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", md)
+    md = re.sub(r"^\s*[-*+]\s+", "", md, flags=re.MULTILINE)
+    md = re.sub(r"\n{3,}", "\n\n", md)
+    return md.strip()
+
+
+# ============================================================
+# PARSER
+# ============================================================
+def _append_line(existing: str, line: str) -> str:
+    """Append a line to an accumulating text field, joined with \n."""
+    return f"{existing}\n{line}".strip() if existing else line
+
+
+def parse_articles(text: str) -> List[Article]:
+    articles: List[Article] = []
+    article: Optional[Article] = None
+    clause: Optional[Clause] = None
+    point: Optional[Point] = None
+    current_chapter = ""
+    current_section = ""
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        m = RE_CHAPTER.match(line)
+        if m:
+            current_chapter = line
+            current_section = ""
+            continue
+
+        m = RE_SECTION.match(line)
+        if m:
+            current_section = line
+            continue
+
+        m = RE_ARTICLE.match(line)
+        if m:
+            if article:
+                if point:
+                    clause.points.append(point)
+                    point = None
+                if clause:
+                    article.clauses.append(clause)
+                    clause = None
+                articles.append(article)
+            article = Article(
+                number=int(m.group(1)),
+                title=m.group(2),
+                chapter=current_chapter,
+                section=current_section,
+            )
+            continue
+
+        if article is None:
+            continue
+
+        m = RE_CLAUSE.match(line)
+        if m:
+            if point:
+                clause.points.append(point)
+                point = None
+            if clause:
+                article.clauses.append(clause)
+            clause = Clause(
+                number=int(m.group(1)),
+                title=m.group(2),
+            )
+            continue
+
+        m = RE_POINT.match(line)
+        if m and clause:
+            if point:
+                clause.points.append(point)
+            point = Point(point=m.group(1))
+            point.content = m.group(2).strip()
+            continue
+
+        if point:
+            point.content = _append_line(point.content, line)
+        elif clause:
+            clause.content = _append_line(clause.content, line)
+        else:
+            article.intro.append(line)
+
+    # Flush whatever is left open at end of document.
+    if article:
+        if point:
+            clause.points.append(point)
+            point = None
+        if clause:
+            article.clauses.append(clause)
+            clause = None
+        articles.append(article)
+
+    return articles
+
+
+# ============================================================
+# DOCUMENT PARSER
+# ============================================================
+def parse_document(row) -> LawDocument:
+    header, body = split_header(row["content"])
+    body = markdown_to_text(body)
+    return LawDocument(
+        law_code=row["id"],
+        law_name=row["title"],
+        document_type=TYPE_MAP.get(row["type"], row["type"]),
+        effective_date=header.get("effective_date", ""),
+        issue_date=header.get("issue_date", ""),
+        english_name=header.get("english_name", ""),
+        status=STATUS_MAP.get(SPLIT, ""),
+        articles=parse_articles(body),
+    )
+
+
+# ============================================================
+# DATASET
+# ============================================================
+def load_laws():
+    ds = load_dataset(DATASET_NAME, split=SPLIT)
     if MAX_DOCS:
-        df = df.head(MAX_DOCS)
-        print(f"  → giới hạn MAX_DOCS={MAX_DOCS}")
-    return df
+        ds = ds.select(range(min(MAX_DOCS, len(ds))))
+    return ds
 
 
-_PARQUET_REVISION = "refs/convert/parquet"
+@dataclass
+class Chunk:
+    chunk_id: str
+    text: str
+    embedding_text: str
+    metadata: dict
 
 
-def _list_parquet_files(config: str) -> list:
-    """Liệt kê các file parquet (đã auto-convert) của 1 config trên HF Hub."""
-    api = HfApi()
-    files = api.list_repo_files(DATASET_NAME, repo_type="dataset", revision=_PARQUET_REVISION)
-    prefix = f"{config}/"
-    matched = sorted(f for f in files if f.startswith(prefix) and f.endswith(".parquet"))
-    return matched
+LEGAL_KEYWORDS = [
+    "đặt cọc",
+    "hợp đồng",
+    "phạt cọc",
+    "nghĩa vụ",
+    "bồi thường",
+    "quyền sở hữu",
+    "quyền sử dụng đất",
+    "tài sản",
+    "vợ chồng",
+    "thừa kế",
+    "thế chấp",
+    "bảo lãnh",
+    "đăng ký",
+]
 
 
-def _iter_parquet_rows(config: str, columns: list):
+def extract_keywords(text: str) -> List[str]:
+    text = text.lower()
+    result = [kw for kw in LEGAL_KEYWORDS if kw in text]
+    return sorted(set(result))
+
+
+def build_citation(law, article, clause=None, point=None) -> dict:
+    citation = {
+        "law_name": law.law_name,
+        "law_code": law.law_code,
+        "article": article.number,
+        "article_title": article.title,
+    }
+    if clause:
+        citation["clause"] = clause.number
+    if point:
+        citation["point"] = point.point
+    return citation
+
+
+def build_embedding_text(law, article, body, clause=None) -> str:
+    parts = [
+        f"Văn bản: {law.law_name}",
+        f"Số hiệu: {law.law_code}",
+        f"Loại: {law.document_type}",
+    ]
+    if article.chapter:
+        parts.append(article.chapter)
+    if article.section:
+        parts.append(article.section)
+    parts.append(f"Điều {article.number}. {article.title}")
+    if clause:
+        parts.append(f"Khoản {clause.number}")
+    parts.append("Nội dung:")
+    parts.append(body)
+    return "\n".join(parts)
+
+
+def build_metadata(
+    law: LawDocument,
+    article: Article,
+    clause: Optional[Clause],
+    point: Optional[Point],
+    idx: int,
+    total: int,
+    chunk_text: str,
+) -> dict:
     """
-    Yield từng dòng (dict) của 1 config, đọc TRỰC TIẾP bằng pyarrow thay vì
-    qua `datasets` streaming — tránh lỗi cast large_string→string khi cột
-    chứa chuỗi rất lớn (content_html). Bộ nhớ được giữ thấp nhờ đọc theo
-    batch (record_batch), không load cả file vào RAM cùng lúc.
+    Build FLAT metadata for the chunk.
+
+    ChromaDB metadata values must be str/int/float/bool - never a dict
+    or a list. Nested structures (like the citation) are serialized to
+    a JSON string; list values (keywords) are joined into a string.
+    None values are replaced with safe defaults (0 / "") since Chroma
+    rejects None as a metadata value.
     """
-    parquet_files = _list_parquet_files(config)
-    if not parquet_files:
-        raise RuntimeError(
-            f"Không tìm thấy file parquet nào cho config '{config}'. "
-            f"Kiểm tra lại tên dataset hoặc revision '{_PARQUET_REVISION}'."
-        )
-    for fname in parquet_files:
-        local_path = hf_hub_download(
-            DATASET_NAME, fname, repo_type="dataset", revision=_PARQUET_REVISION
-        )
-        pf = pq.ParquetFile(local_path)
-        for batch in pf.iter_batches(batch_size=2048, columns=columns):
-            cols = {name: batch.column(name).to_pylist() for name in batch.schema.names}
-            n = len(next(iter(cols.values()))) if cols else 0
-            for i in range(n):
-                yield {k: v[i] for k, v in cols.items()}
-
-
-def load_content_for_ids(target_ids: set) -> dict:
-    """
-    Đọc config 'content' trực tiếp bằng pyarrow và chỉ giữ lại content_html
-    của những id nằm trong target_ids (không tải hết ~3.6GB vào RAM).
-    """
-    print(f"→ Đọc config 'content' (pyarrow) để lấy {len(target_ids):,} văn bản cần dùng ...")
-    result = {}
-    remaining = set(target_ids)
-    for row in tqdm(_iter_parquet_rows("content", columns=["id", "content_html"]),
-                     desc="  duyệt content"):
-        rid = str(row["id"])
-        if rid in remaining:
-            result[rid] = row["content_html"]
-            remaining.discard(rid)
-            if not remaining:
-                break
-    print(f"  → tìm thấy nội dung cho {len(result):,}/{len(target_ids):,} văn bản "
-          f"({len(target_ids) - len(result):,} chỉ có bản scan PDF, không có HTML)")
-    return result
-
-
-def load_relationships_for_ids(target_ids: set) -> dict:
-    """
-    Đọc config 'relationships' trực tiếp bằng pyarrow và gom các quan hệ mà
-    doc_id nằm trong target_ids, ví dụ 'Sửa đổi bổ sung', 'Thay thế', ...
-    Trả về: {doc_id: [{"other_doc_id":..., "relationship":...}, ...]}
-    """
-    print("→ Đọc config 'relationships' (pyarrow) ...")
-    result = {}
-    for row in tqdm(_iter_parquet_rows("relationships",
-                                        columns=["doc_id", "other_doc_id", "relationship"]),
-                     desc="  duyệt relationships"):
-        doc_id = str(row["doc_id"])
-        if doc_id in target_ids:
-            result.setdefault(doc_id, []).append({
-                "other_doc_id": str(row["other_doc_id"]),
-                "relationship": row["relationship"],
-            })
-    return result
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 2: HTML → PLAIN TEXT
-# ══════════════════════════════════════════════════════════════════════════════
-
-def html_to_text(content_html: str) -> str:
-    """content_html là HTML thô của trang chi tiết văn bản trên vbpl.vn.
-    Chuyển thành plain text, giữ xuống dòng theo <p>/<div>/<tr> để
-    parse_sections() ở bước sau vẫn nhận diện được Điều/Chương theo dòng."""
-    soup = BeautifulSoup(content_html, "lxml")
-
-    # Loại bỏ script/style nếu có
-    for tag in soup(["script", "style"]):
-        tag.decompose()
-
-    text = soup.get_text(separator="\n")
-
-    # Dọn dòng trống thừa
-    lines = [l.strip() for l in text.splitlines()]
-    lines = [l for l in lines if l]
-    return "\n".join(lines)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 3: METADATA VĂN BẢN — lấy trực tiếp từ cột dataset, không cần regex header
-# ══════════════════════════════════════════════════════════════════════════════
-
-def build_meta(row: dict, status: str, relationships_by_doc: dict, meta_df_by_id: dict) -> dict:
-    meta = {
-        "doc_id":          row["id"],
-        "so_hieu":         row.get("so_ky_hieu"),
-        "ten_luat":        row.get("title"),
-        "co_quan_bh":      row.get("co_quan_ban_hanh"),
-        "ngay_ban_hanh":   row.get("ngay_ban_hanh"),
-        "ngay_hieu_luc":   row.get("ngay_co_hieu_luc"),
-        "ngay_het_hieu_luc": row.get("ngay_het_hieu_luc") or None,
-        "nguoi_ky":        row.get("nguoi_ky"),
-        "chuc_danh_ky":    row.get("chuc_danh"),
-        "loai_van_ban":    row.get("loai_van_ban"),
-        "nganh":           row.get("nganh"),
-        "linh_vuc":        row.get("linh_vuc"),
-        "pham_vi":         row.get("pham_vi"),
-        "tinh_trang_goc":  row.get("tinh_trang_hieu_luc"),
-        "sua_doi_luat":    None,
-        "status":          status,
+    citation = build_citation(law, article, clause, point)
+    return {
+        "law_code": law.law_code,
+        "law_name": law.law_name,
+        "document_type": law.document_type,
+        "effective_date": law.effective_date,
+        "issue_date": law.issue_date,
+        "english_name": law.english_name,
+        "status": law.status,
+        "chapter": article.chapter,
+        "section": article.section,
+        "article_number": article.number,
+        "article_title": article.title,
+        "clause_number": clause.number if clause else 0,
+        "clause_title": clause.title if clause else "",
+        "point": point.point if point else "",
+        "chunk_index": idx,
+        "chunk_total": total,
+        "keywords": ", ".join(extract_keywords(chunk_text)),
+        "citation_json": json.dumps(citation, ensure_ascii=False),
     }
 
-    # Làm giàu "sua_doi_luat" từ bảng quan hệ, nếu có bật INCLUDE_RELATIONSHIPS
-    rels = relationships_by_doc.get(row["id"], [])
-    if rels:
-        interesting = [r for r in rels if any(
-            kw in (r["relationship"] or "").lower()
-            for kw in ("sửa đổi", "thay thế", "hết hiệu lực")
-        )]
-        if interesting:
-            parts = []
-            for r in interesting[:5]:
-                other_title = meta_df_by_id.get(r["other_doc_id"], {}).get("title", r["other_doc_id"])
-                parts.append(f"{r['relationship']}: {other_title}")
-            meta["sua_doi_luat"] = " | ".join(parts)
 
-    return meta
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 4: TÁCH CÁC PHẦN CẤU TRÚC (Điều, Chương, Mục, Phụ lục)
-# — logic giữ nguyên như bản gốc, chạy trên plain text đã convert từ HTML —
-# ══════════════════════════════════════════════════════════════════════════════
-
-RE_DIEU    = re.compile(r"^(Điều\s+\d+[\.\:]?\s*.{0,120})$", re.IGNORECASE)
-RE_CHUONG  = re.compile(r"^(Chương\s+[IVXLCDM\d]+[\.\:]?\s*.{0,120})$", re.IGNORECASE)
-RE_MUC     = re.compile(r"^(Mục\s+\d+[\.\:]?\s*.{0,120})$", re.IGNORECASE)
-RE_PHUCLUC = re.compile(r"^(PHỤ LỤC.{0,120})$", re.IGNORECASE)
-RE_HEADER  = re.compile(
-    r"^(?:QUỐC HỘI|CHÍNH PHỦ|CỘNG HÒA XÃ HỘI|Độc lập|________|\d{1,3}$|Số thứ tự|Mã số)",
-    re.IGNORECASE
-)
-
-
-def parse_sections(text: str) -> list:
-    lines = text.splitlines()
-    sections = []
-    current = {"section_type": "mo_dau", "heading": "Mở đầu", "content": []}
-    current_chuong = ""
-    current_muc = ""
-
-    start_idx = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if RE_HEADER.match(stripped) or len(stripped) < 3:
-            continue
-        if re.match(r"^Căn cứ", stripped, re.IGNORECASE) or RE_DIEU.match(stripped):
-            start_idx = i
-            break
-
-    for line in lines[start_idx:]:
-        stripped = line.strip()
-        if not stripped:
-            current["content"].append("")
-            continue
-
-        if RE_CHUONG.match(stripped):
-            current_chuong = stripped
-            current_muc = ""
-            current["content"].append(stripped)
-            continue
-
-        if RE_MUC.match(stripped):
-            current_muc = stripped
-            current["content"].append(stripped)
-            continue
-
-        if RE_DIEU.match(stripped):
-            if current["content"]:
-                sections.append({**current, "content": "\n".join(current["content"]).strip()})
-            current = {
-                "section_type": "dieu",
-                "heading":      stripped,
-                "chuong":       current_chuong,
-                "muc":          current_muc,
-                "content":      [],
-            }
-            continue
-
-        if RE_PHUCLUC.match(stripped):
-            if current["content"]:
-                sections.append({**current, "content": "\n".join(current["content"]).strip()})
-            current = {
-                "section_type": "phu_luc",
-                "heading":      stripped,
-                "chuong":       "",
-                "muc":          "",
-                "content":      [],
-            }
-            continue
-
-        current["content"].append(stripped)
-
-    if current["content"]:
-        sections.append({**current, "content": "\n".join(current["content"]).strip()})
-
-    result = [s for s in sections if len(s["content"]) >= 20]
-    return result
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 5: CHUNK — chia section dài thành các chunk nhỏ hơn (giữ nguyên bản gốc)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def split_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERLAP_CHARS) -> list:
+def split_soft(text: str, max_chars: int = 900, overlap: int = 120) -> List[str]:
     if len(text) <= max_chars:
         return [text]
 
-    chunks = []
+    chunks: List[str] = []
     start = 0
-    while start < len(text):
-        end = start + max_chars
-        if end >= len(text):
-            chunks.append(text[start:].strip())
+    n = len(text)
+
+    while start < n:
+        end = min(start + max_chars, n)
+        if end == n:
+            piece = text[start:].strip()
+            if piece:
+                chunks.append(piece)
             break
 
-        cut = -1
-        for sep in ("\n", ". ", " "):
-            pos = text.rfind(sep, start + overlap, end)
-            if pos > start:
-                cut = pos + len(sep)
-                break
-        if cut == -1:
+        cut = text.rfind("\n", start, end)
+        if cut <= start:
+            cut = text.rfind(". ", start, end)
+        if cut <= start:
             cut = end
 
-        chunks.append(text[start:cut].strip())
-        start = cut - overlap
+        piece = text[start:cut].strip()
+        if piece:
+            chunks.append(piece)
 
-    return [c for c in chunks if c]
+        # Guarantee forward progress even if `cut - overlap` would land
+        # at/behind the current start (this used to cause an infinite loop).
+        next_start = cut - overlap
+        if next_start <= start:
+            next_start = cut
+        start = next_start
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BƯỚC 6: TẠO CHUNK RECORDS đầy đủ metadata
-# ══════════════════════════════════════════════════════════════════════════════
-
-def make_chunks(sections: list, meta: dict) -> list:
-    chunks = []
-    for sec in sections:
-        texts = split_into_chunks(sec["content"])
-        for i, text in enumerate(texts):
-            law_context = f"[{meta['loai_van_ban'] or 'VĂN BẢN'} {meta['so_hieu'] or ''}] {meta['ten_luat'] or ''}\n"
-            if sec["section_type"] == "dieu":
-                law_context += f"{sec.get('chuong','')}\n{sec.get('muc','')}\n{sec['heading']}\n".strip() + "\n"
-            heading = sec.get("heading", "").strip()
-            chunk = {
-                "chunk_id": (
-                    f"{meta['so_hieu']}"
-                    f"__{sec['section_type']}"
-                    f"__{hashlib.md5(heading.encode()).hexdigest()[:8]}"
-                    f"__{i}"
-                ),
-
-                "text": law_context + text,
-                "char_len": len(text),
-
-                "section_type": sec["section_type"],
-                "heading":      sec["heading"],
-                "chuong":       sec.get("chuong", ""),
-                "muc":          sec.get("muc", ""),
-                "chunk_idx":    i,
-                "total_chunks": len(texts),
-
-                "doc_id":          meta["doc_id"],
-                "so_hieu":         meta["so_hieu"],
-                "ten_luat":        meta["ten_luat"],
-                "loai_van_ban":    meta["loai_van_ban"],
-                "co_quan_bh":      meta["co_quan_bh"],
-                "ngay_ban_hanh":   meta["ngay_ban_hanh"],
-                "ngay_hieu_luc":   meta["ngay_hieu_luc"],
-                "ngay_het_hieu_luc": meta["ngay_het_hieu_luc"],
-                "nguoi_ky":        meta["nguoi_ky"],
-                "chuc_danh_ky":    meta["chuc_danh_ky"],
-                "nganh":           meta["nganh"],
-                "linh_vuc":        meta["linh_vuc"],
-                "pham_vi":         meta["pham_vi"],
-                "sua_doi_luat":    meta["sua_doi_luat"],
-
-                "status":          meta["status"],
-                "tinh_trang_goc":  meta["tinh_trang_goc"],
-            }
-            chunks.append(chunk)
-
-    merged = []
-    for chunk in chunks:
-        if merged and chunk["char_len"] < 100 and chunk["section_type"] == merged[-1]["section_type"]:
-            merged[-1]["text"]     += "\n" + chunk["text"]
-            merged[-1]["char_len"] += chunk["char_len"]
-            merged[-1]["total_chunks"] -= 1
-        else:
-            merged.append(chunk)
-    return merged
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE CHÍNH
-# ══════════════════════════════════════════════════════════════════════════════
-
-def process_doc(row: dict, content_html: str, status: str,
-                 relationships_by_doc: dict, meta_df_by_id: dict) -> list | None:
-    try:
-        text = html_to_text(content_html)
-    except Exception as e:
-        print(f"    ✗ Lỗi convert HTML (id={row['id']}): {e}")
-        return None
-
-    meta     = build_meta(row, status, relationships_by_doc, meta_df_by_id)
-    sections = parse_sections(text)
-    chunks   = make_chunks(sections, meta)
     return chunks
 
 
-def main():
-    output_file = OUTPUT_DIR / "rag_corpus.jsonl"
-    stats_file  = OUTPUT_DIR / "_stats.json"
+def make_chunk_id(parts: List[Any], seen_keys: Dict[str, int]) -> str:
+    """
+    Build a stable, collision-safe chunk_id.
 
-    print(f"\n{'='*60}")
-    print(f"  Chunk Laws (HuggingFace: {DATASET_NAME}) → RAG Corpus")
-    print(f"  Lọc loai_van_ban: {LOAI_VAN_BAN_FILTER or 'TẤT CẢ'}")
-    print(f"  Output: {output_file}")
-    print(f"{'='*60}\n")
+    `parts` should uniquely identify a chunk's *position* in the corpus
+    (split, law_code, article, clause, point, idx). We include SPLIT so
+    that if you ever load multiple splits/versions of the same law into
+    one Chroma collection, their ids don't collide and silently overwrite
+    each other via upsert.
 
-    # 1) Metadata
-    meta_df = load_metadata_df()
-    meta_df = filter_metadata_df(meta_df)
-    meta_df_by_id = meta_df.set_index("id").to_dict(orient="index")
-    for rid, d in meta_df_by_id.items():
-        d["id"] = rid
-    target_ids = set(meta_df_by_id.keys())
+    On top of that, `seen_keys` guards against the rarer case where the
+    parser itself produces two structurally-identical keys for genuinely
+    different content (e.g. a stray numbered list mis-detected as a
+    "khoản" duplicates a real khoản number). Instead of silently colliding,
+    we detect it and append a disambiguating suffix, so BOTH chunks are
+    kept - and we can report how often this happened.
+    """
+    base_key = "|".join(str(p) for p in parts)
+    key = base_key
+    if key in seen_keys:
+        seen_keys[key] += 1
+        key = f"{base_key}|dup{seen_keys[base_key]}"
+    else:
+        seen_keys[key] = 1
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
-    if not target_ids:
-        print("✗ Không có văn bản nào khớp bộ lọc — dừng lại.")
-        return
 
-    # 2) Nội dung HTML (chỉ những id cần dùng)
-    content_by_id = load_content_for_ids(target_ids)
+# ============================================================
+# BUILD CHUNKS
+# ============================================================
+def build_chunks(law: LawDocument, seen_keys: Dict[str, int]) -> List[Chunk]:
+    chunks: List[Chunk] = []
 
-    # 3) Quan hệ pháp lý (tuỳ chọn)
-    relationships_by_doc = {}
-    if INCLUDE_RELATIONSHIPS:
-        relationships_by_doc = load_relationships_for_ids(target_ids)
+    for article in law.articles:
+        # ----------------------------------------------------
+        # Build full article text
+        # ----------------------------------------------------
+        article_parts = []
+        if article.intro:
+            article_parts.append("\n".join(article.intro))
+        for clause in article.clauses:
+            clause_text = []
+            if clause.title:
+                clause_text.append(clause.title)
+            if clause.content:
+                clause_text.append(clause.content)
+            for point in clause.points:
+                clause_text.append(f"{point.point}) {point.content}")
+            article_parts.append("\n".join(clause_text))
+        article_body = "\n".join(article_parts).strip()
 
-    # 4) Xử lý & ghi chunk
-    total_docs   = 0
-    total_chunks = 0
-    errors       = []
-    no_content   = []
-    stats_per_status = {}
+        # ----------------------------------------------------
+        # Điều ngắn (short article -> single chunk)
+        # ----------------------------------------------------
+        if len(article_body) <= MAX_CHUNK_CHARS:
+            metadata = build_metadata(law, article, None, None, 0, 1, article_body)
+            embedding_text = build_embedding_text(law, article, article_body)
+            chunk_id = make_chunk_id(
+                [SPLIT, law.law_code, "article", article.number],
+                seen_keys,
+            )
+            chunks.append(
+                Chunk(
+                    chunk_id=chunk_id,
+                    text=article_body,
+                    embedding_text=embedding_text,
+                    metadata=metadata,
+                )
+            )
+            continue
 
-    print(f"\n→ Xử lý {len(target_ids):,} văn bản ...")
-    with output_file.open("w", encoding="utf-8") as out:
-        for doc_id, row in tqdm(meta_df_by_id.items(), desc="  chunking"):
-            content_html = content_by_id.get(doc_id)
-            if not content_html:
-                no_content.append(doc_id)
+        # ----------------------------------------------------
+        # Điều dài (long article -> split by clause / point)
+        # ----------------------------------------------------
+        for clause in article.clauses:
+            clause_lines = []
+            if clause.title:
+                clause_lines.append(clause.title)
+            if clause.content:
+                clause_lines.append(clause.content)
+
+            # =================================================
+            # Khoản không có điểm
+            # =================================================
+            if not clause.points:
+                clause_body = "\n".join(clause_lines).strip()
+                pieces = split_soft(clause_body)
+                for idx, piece in enumerate(pieces):
+                    metadata = build_metadata(
+                        law, article, clause, None, idx, len(pieces), piece
+                    )
+                    embedding_text = build_embedding_text(
+                        law, article, piece, clause
+                    )
+                    chunk_id = make_chunk_id(
+                        [
+                            SPLIT,
+                            law.law_code,
+                            "article", article.number,
+                            "clause", clause.number,
+                            "idx", idx,
+                        ],
+                        seen_keys,
+                    )
+                    chunks.append(
+                        Chunk(
+                            chunk_id=chunk_id,
+                            text=piece,
+                            embedding_text=embedding_text,
+                            metadata=metadata,
+                        )
+                    )
                 continue
 
-            status = map_status(row.get("tinh_trang_hieu_luc"))
-            chunks = process_doc(row, content_html, status, relationships_by_doc, meta_df_by_id)
+            # =================================================
+            # Khoản có điểm
+            # =================================================
+            for point in clause.points:
+                point_body = point.content.strip()
+                pieces = split_soft(point_body)
+                for idx, piece in enumerate(pieces):
+                    metadata = build_metadata(
+                        law, article, clause, point, idx, len(pieces), piece
+                    )
+                    embedding_text = build_embedding_text(
+                        law, article, piece, clause
+                    )
+                    chunk_id = make_chunk_id(
+                        [
+                            SPLIT,
+                            law.law_code,
+                            "article", article.number,
+                            "clause", clause.number,
+                            "point", point.point,
+                            "idx", idx,
+                        ],
+                        seen_keys,
+                    )
+                    chunks.append(
+                        Chunk(
+                            chunk_id=chunk_id,
+                            text=piece,
+                            embedding_text=embedding_text,
+                            metadata=metadata,
+                        )
+                    )
 
-            if chunks is None:
-                errors.append(doc_id)
-                stats_per_status.setdefault(status, {"docs": 0, "chunks": 0, "errors": 0})
-                stats_per_status[status]["errors"] += 1
-                continue
+    return chunks
 
-            for chunk in chunks:
-                out.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
-            total_docs   += 1
-            total_chunks += len(chunks)
-            stats_per_status.setdefault(status, {"docs": 0, "chunks": 0, "errors": 0})
-            stats_per_status[status]["docs"] += 1
-            stats_per_status[status]["chunks"] += len(chunks)
-
-    # 5) Ghi thống kê
-    stats = {
-        "generated_at":        time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "source_dataset":      DATASET_NAME,
-        "loai_van_ban_filter": LOAI_VAN_BAN_FILTER,
-        "total_docs":          total_docs,
-        "total_chunks":        total_chunks,
-        "avg_chunks_per_doc":  round(total_chunks / total_docs, 1) if total_docs else 0,
-        "docs_without_content": len(no_content),
-        "max_chunk_chars":     MAX_CHUNK_CHARS,
-        "overlap_chars":       OVERLAP_CHARS,
-        "by_status":           stats_per_status,
-        "errors":              errors,
+# ============================================================
+# EXPORT
+# ============================================================
+def export_chunk(fp, chunk: Chunk) -> None:
+    record = {
+        "chunk_id": chunk.chunk_id,
+        "text": chunk.text,
+        "embedding_text": chunk.embedding_text,
+        **chunk.metadata,
     }
-    stats_file.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    fp.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"\n{'='*60}")
-    print(f"  ✅ Xong: {total_chunks:,} chunks từ {total_docs:,} văn bản")
-    print(f"  ⚠ {len(no_content):,} văn bản không có content HTML (chỉ có bản scan PDF)")
-    print(f"  Output: {output_file}")
+
+# ============================================================
+# PIPELINE
+# ============================================================
+def process_dataset():
+    output_jsonl = OUTPUT_DIR / "rag_corpus.jsonl"
+    stats_path = OUTPUT_DIR / "_stats.json"
+
+    dataset = load_laws()
+
+    total_docs = 0
+    total_chunks = 0
+    total_articles = 0
+    total_clauses = 0
+    total_points = 0
+    chunk_per_doc = []
+    chunk_per_type = Counter()
+    article_per_type = Counter()
+    errors = []
+
+    # Shared across the ENTIRE run (not per-document), so we also catch
+    # duplicate keys caused by two different rows sharing the same law_code.
+    seen_keys: Dict[str, int] = {}
+
+    with output_jsonl.open("w", encoding="utf-8") as fout:
+        for row in dataset:
+            try:
+                law = parse_document(row)
+                chunks = build_chunks(law, seen_keys)
+                for chunk in chunks:
+                    export_chunk(fout, chunk)
+
+                total_docs += 1
+                total_chunks += len(chunks)
+                chunk_per_doc.append(len(chunks))
+
+                article_count = len(law.articles)
+                total_articles += article_count
+                article_per_type[law.document_type] += article_count
+                chunk_per_type[law.document_type] += len(chunks)
+
+                for article in law.articles:
+                    total_clauses += len(article.clauses)
+                    for clause in article.clauses:
+                        total_points += len(clause.points)
+            except Exception as e:
+                errors.append({"law": row.get("id"), "error": str(e)})
+                continue
+
+    stats = {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset": DATASET_NAME,
+        "split": SPLIT,
+        "documents": total_docs,
+        "articles": total_articles,
+        "clauses": total_clauses,
+        "points": total_points,
+        "chunks": total_chunks,
+        "avg_chunk_per_doc": round(sum(chunk_per_doc) / len(chunk_per_doc), 2)
+        if chunk_per_doc
+        else 0,
+        "chunk_by_document_type": dict(chunk_per_type),
+        "article_by_document_type": dict(article_per_type),
+        "errors": len(errors),
+        # How many chunk keys collided and had to be disambiguated with a
+        # "|dupN" suffix. Should normally be 0 - a nonzero value usually
+        # means the source text has malformed numbering (e.g. a stray
+        # numbered list mis-parsed as a "khoản") and is worth investigating.
+        "duplicate_keys_resolved": sum(v - 1 for v in seen_keys.values() if v > 1),
+    }
+
+    with stats_path.open("w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
     if errors:
-        print(f"  ⚠ {len(errors)} văn bản lỗi — xem {stats_file}")
-    print(f"{'='*60}\n")
+        error_path = OUTPUT_DIR / "_errors.json"
+        with error_path.open("w", encoding="utf-8") as f:
+            json.dump(errors, f, ensure_ascii=False, indent=2)
+
+    print("=" * 60)
+    print("Chunk generation completed")
+    print(f"Documents : {total_docs:,}")
+    print(f"Articles  : {total_articles:,}")
+    print(f"Clauses   : {total_clauses:,}")
+    print(f"Points    : {total_points:,}")
+    print(f"Chunks    : {total_chunks:,}")
+    print(f"Errors    : {len(errors)}")
+    print("=" * 60)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    process_dataset()
 
 
 if __name__ == "__main__":

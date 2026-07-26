@@ -8,11 +8,11 @@ class QueryExpansionService:
         base = issue.strip()
         queries = [base]
         if n_queries >= 2:
-            queries.append(f"{base} văn bản pháp luật")
+            queries.append(f"{base} điều luật")
         if n_queries >= 3:
-            queries.append(f"{base} án lệ")
+            queries.append(f"{base} bộ luật")
         if n_queries >= 4:
-            queries.append(f"{base} điều khoản")
+            queries.append(f"{base} văn bản pháp luật")
         if n_queries >= 5:
             queries.append(f"{base} quy định pháp luật")
 

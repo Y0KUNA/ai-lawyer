@@ -17,8 +17,8 @@ class RetrievalPipelineInput(BaseModel):
 class RetrievalPipelineTool(BaseTool):
     """One-stop retrieval pipeline that the Research Agent uses.
 
-    It internally composes query expansion, HyDE, RAG, reranking, citation verification,
-    and low-coverage EXA fallback through a single service layer.
+    It internally composes query expansion, HyDE, RAG (law documents only),
+    reranking, citation verification, and low-coverage EXA fallback through a single service layer.
     """
     name :str = "RetrievalPipelineTool"
     description : str = "Run the full retrieval pipeline and return authoritative chunks."

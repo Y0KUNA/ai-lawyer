@@ -79,7 +79,7 @@ class RAGQueryTool(BaseTool):
             seen = set()
             deduped = []
             for c in merged:
-                cid = c.get("id") or c.get("metadata", {}).get("so_hieu") or c.get("text")[:120]
+                cid = c.get("id") or c.get("metadata", {}).get("law_code") or c.get("text")[:120]
                 if cid in seen:
                     continue
                 seen.add(cid)

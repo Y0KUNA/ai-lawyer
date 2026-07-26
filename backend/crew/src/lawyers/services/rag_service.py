@@ -1,6 +1,8 @@
 from typing import Dict, List, Optional
+from .evidence import Evidence
 from .embedding_service import EmbeddingService
 from .chroma_service import ChromaService
+from .law_document_filter import LawDocumentFilter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,33 +16,18 @@ class RAGService:
         if not queries or self.collection is None:
             return []
 
-        all_chunks: List[Dict] = []
+        all_chunks: List[Evidence] = []
         embeddings = EmbeddingService.encode(queries)
         logger.info(
             "Running %d semantic queries",
             len(queries),
         )
         try:
-            
-            results = self.collection.query(
-                query_embeddings=embeddings,
-                n_results=n_results,
-                where={
-                    "status": {
-                        "$ne": "het_hieu_luc"
-                    }
-                }
-            )
+            results = self._query_with_law_filters(embeddings, n_results)
         except Exception:
-            
-            logger.exception(
-                "Filtered search failed. Retry without filter."
-            )
-            results = self.collection.query(
-                query_embeddings=embeddings,
-                n_results=n_results,
-            )
-            
+            logger.exception("Semantic search failed")
+            return []
+
         logger.info(
             "Retrieved %d semantic result groups",
             len(results.get("documents", [])),
@@ -64,48 +51,113 @@ class RAGService:
             metas = metadatas[i]
             ids = ids_list[i]
             distances = distances_list[i]
-            
+
             for rank, (doc, meta, _id, distance) in enumerate(
                 zip(docs, metas, ids, distances),
                 start=1,
             ):
                 retrieval_score = (
-                                1.0 - float(distance)
-                                if distance is not None
-                                else None
-                            )   
+                    1.0 - float(distance)
+                    if distance is not None
+                    else 0.0
+                )
 
-                all_chunks.append({
-                                "id": _id,
-                                "text": doc,
-                                "metadata": meta or {},
-                                "source_query": query,
-                                "retrieval_rank": rank,
-                                "retrieval_score": retrieval_score,
-                                "retrieval_source": "rag",
-                })
-           
+                chunk_dict = {
+                    "id": _id,
+                    "text": doc,
+                    "metadata": meta or {},
+                    "source_query": query,
+                    "retrieval_rank": rank,
+                    "retrieval_score": retrieval_score,
+                    "retrieval_source": "rag",
+                }
+                all_chunks.append(Evidence.from_dict(chunk_dict, default_source="rag"))
+
         logger.info(
             "Retrieved %d chunks",
             len(all_chunks),
         )
         deduped = []
         seen = set()
-        for chunk in all_chunks:
-            meta = chunk["metadata"]
+        for evidence in all_chunks:
+            meta = evidence.metadata or {}
+            # Field names match what the chunker actually writes to Chroma:
+            # law_code / article_number / clause_number (NOT so_hieu/dieu/khoan).
             cid = (
-                meta.get("so_hieu"),
-                meta.get("dieu"),
-                meta.get("khoan"),
+                meta.get("law_code"),
+                meta.get("article_number"),
+                meta.get("clause_number"),
             )
             if cid == (None, None, None):
-                cid = chunk.get("id") or chunk["text"][:100]
+                cid = evidence.source or evidence.text[:100]
             if cid in seen:
                 continue
             seen.add(cid)
-            deduped.append(chunk)
+            deduped.append(evidence)
         deduped.sort(
-            key=lambda x: x.get("retrieval_score", 0.0),
+            key=lambda x: x.score,
             reverse=True,
         )
-        return deduped
+        filtered = LawDocumentFilter.filter_chunks(deduped)
+        if len(filtered) < len(deduped):
+            logger.info(
+                "Filtered out %d non-law/case-law chunks from RAG results",
+                len(deduped) - len(filtered),
+            )
+        print("RAG results: ", filtered)
+        return filtered
+
+    def _query_with_law_filters(self, embeddings: List[List[float]], n_results: int) -> Dict:
+        """
+        Try each `where` clause from LawDocumentFilter.chroma_where_clauses(),
+        from strictest to loosest. A clause is only accepted if it actually
+        returned at least one document for at least one query; otherwise we
+        fall through to the next (looser) clause. This fixes a bug where the
+        loop returned the FIRST clause's result as long as it didn't raise
+        an exception - even when that result was empty - so the intended
+        `where=None` fallback was never reached.
+        """
+        last_error = None
+        last_result = None
+
+        for where in LawDocumentFilter.chroma_where_clauses():
+            kwargs = {
+                "query_embeddings": embeddings,
+                "n_results": n_results,
+            }
+            if where is not None:
+                kwargs["where"] = where
+
+            try:
+                result = self.collection.query(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Chroma query failed with where=%s: %s", where, exc)
+                continue
+
+            last_result = result
+            documents = result.get("documents", [])
+            has_any_hit = any(len(group) > 0 for group in documents)
+
+            if has_any_hit:
+                if where is not None:
+                    logger.info("Chroma query matched using where=%s", where)
+                return result
+
+            logger.info(
+                "Chroma query with where=%s returned 0 documents, trying next filter",
+                where,
+            )
+
+        if last_result is not None:
+            # Every clause ran without error but all were empty - return the
+            # last (loosest / where=None) result rather than raising.
+            return last_result
+
+        if last_error:
+            raise last_error
+
+        return self.collection.query(
+            query_embeddings=embeddings,
+            n_results=n_results,
+        )
