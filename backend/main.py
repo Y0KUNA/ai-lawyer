@@ -51,7 +51,7 @@ _chroma = None
 _collection = None
 
 try:
-    _embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3"))
+    _embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3", device="cpu"))
     ChromaService.initialize()
     _collection = ChromaService.get_collection()
     print("CHROMA_DIR:", CHROMA_DIR)
@@ -154,7 +154,11 @@ def chat(req: ChatRequest):
         }
 
     # ── RAG: truy xuất context rồi gắn vào system prompt ────────────
+    # ── RAG: truy xuất context rồi gắn vào system prompt ────────────
+    t_rag_start = time.time()
     law_context = retrieve_law_context(req.messages)
+    t_rag_end = time.time()
+    print(f"[TIMING] RAG retrieval mất: {t_rag_end - t_rag_start:.2f}s")
     if law_context:
         rag_note = (
             "\n\n=== CÁC QUY ĐỊNH PHÁP LUẬT LIÊN QUAN ===\n"
@@ -177,15 +181,19 @@ def chat(req: ChatRequest):
 
     try:
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        t_before_ollama = time.time()
+        print(f"[TIMING] Tổng thời gian trước khi gọi Ollama: {t_before_ollama - t_rag_start:.2f}s")
         response = requests.post(
             f"{ollama_host}/api/chat",
             json={
-                "model": "gemma4:e2b",
+                "model": "gemma4:e4b",
                 "messages": messages,
                 "stream": True,
+                "keep_alive": "30m",
             },
             stream=True,
             timeout=(10, None),
+            
         )
         response.raise_for_status()
     except requests.RequestException as exc:
@@ -208,6 +216,11 @@ def chat(req: ChatRequest):
                     yield content
 
                 if chunk.get("done"):
+                    print(f"[OLLAMA STATS] prompt_eval_count={chunk.get('prompt_eval_count')}, "
+                        f"prompt_eval_duration={chunk.get('prompt_eval_duration', 0)/1e9:.2f}s, "
+                        f"eval_count={chunk.get('eval_count')}, "
+                        f"eval_duration={chunk.get('eval_duration', 0)/1e9:.2f}s, "
+                        f"load_duration={chunk.get('load_duration', 0)/1e9:.2f}s")
                     break
         finally:
             response.close()

@@ -27,7 +27,7 @@ class RetrievalPipelineTool(BaseTool):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         local_llm = LLM(
-            model="ollama/gemma4:e2b",
+            model="ollama/gemma4:e4b",
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         )
         self._service = RetrievalPipelineService(local_llm)

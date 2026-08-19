@@ -12,7 +12,7 @@ from .citation_service import CitationVerifierService
 from .coverage_service import CoverageEvaluator
 from .normalize_service import NormalizeService
 from .law_document_filter import LawDocumentFilter
-
+from .domain_relevance_filter import DomainRelevanceFilter
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class RetrievalPipelineService:
 
         chunks = self.rag.search(queries, n_results=n_results)
         chunks = LawDocumentFilter.filter_chunks(chunks)
+        chunks = DomainRelevanceFilter.filter_chunks(chunks, issue)
         logger.info("RAG returned %d law-only evidences", len(chunks))
         logger.info("RAG evidence list: %s", [e.to_log_dict() for e in chunks])
 
@@ -72,6 +73,7 @@ class RetrievalPipelineService:
                 n_results=n_results,
             )
             chunks = LawDocumentFilter.filter_chunks(chunks)
+            chunks = DomainRelevanceFilter.filter_chunks(chunks, issue) 
             coverage = self.coverage_evaluator.evaluate(
                 chunks,
                 issue,
