@@ -54,6 +54,10 @@ research_relevant_laws:
         3. Nếu không xác minh được số điều cụ thể qua tìm kiếm, phải nói rõ
            "chưa xác minh được", không tự suy ra từ trí nhớ.
         4. Không thực hiện suy luận hay áp dụng luật vào tình huống ở bước này.
+        QUAN TRỌNG: gọi RetrievalPipelineTool ĐÚNG 1 LẦN cho toàn bộ bước này,
+     truyền tham số issues = danh sách TẤT CẢ vấn đề pháp lý đã xác định
+     (mỗi phần tử là 1 vấn đề riêng, giữ nguyên văn câu hỏi của từng vấn đề).
+     TUYỆT ĐỐI KHÔNG gộp nhiều vấn đề thành một chuỗi issues duy nhất.
   expected_output: |-
     Danh sách căn cứ pháp lý cho từng vấn đề, mỗi căn cứ gồm: số điều/văn
         bản, nội dung tóm tắt, phạm vi áp dụng cụ thể (loại hợp đồng/loại giao

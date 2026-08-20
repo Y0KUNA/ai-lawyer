@@ -7,7 +7,7 @@ from ..services.retrieval_pipeline_service import RetrievalPipelineService
 
 
 class RetrievalPipelineInput(BaseModel):
-    issue: str
+    issue: List[str]
     n_queries: int = 3
     n_results: int = 8
     top_k: int = 8
@@ -32,5 +32,5 @@ class RetrievalPipelineTool(BaseTool):
         )
         self._service = RetrievalPipelineService(local_llm)
 
-    def _run(self, issue: str, n_queries: int = 3, n_results: int = 8, top_k: int = 8, coverage_threshold: float = 0.5) -> List[dict]:
-        return self._service.run(issue, n_queries=n_queries, n_results=n_results, top_k=top_k, coverage_threshold=coverage_threshold)
+    def _run(self, issue: List[str], n_queries: int = 3, n_results: int = 8, top_k: int = 8, coverage_threshold: float = 0.5) -> List[dict]:
+        return self._service.run_many(issue, n_queries=n_queries, n_results=n_results, top_k=top_k, coverage_threshold=coverage_threshold)

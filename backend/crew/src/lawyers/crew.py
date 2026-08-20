@@ -10,7 +10,7 @@ from .tools.retrieval_pipeline_tool import RetrievalPipelineTool
 load_dotenv()
 
 local_llm = LLM(
-    model="ollama/gemma4:e4b",
+    model="ollama/gemma4:12b", #ollama/gemma4:e4b
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     
 )

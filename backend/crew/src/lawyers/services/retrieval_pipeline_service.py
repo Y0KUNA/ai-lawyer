@@ -13,7 +13,7 @@ from .coverage_service import CoverageEvaluator
 from .normalize_service import NormalizeService
 from .law_document_filter import LawDocumentFilter
 from .domain_relevance_filter import DomainRelevanceFilter
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 # ---- Cấu hình cho bước compact/trim -----------------------------------
@@ -134,7 +134,18 @@ class RetrievalPipelineService:
             "coverage": coverage,
             "chunks": compact_chunks,
         }
-
+    def run_many(self, issues: List[str], **kwargs) -> List[Dict]:
+        results = [None] * len(issues)
+        with ThreadPoolExecutor(max_workers=min(len(issues), 5)) as pool:
+            futures = {pool.submit(self.run, issue, **kwargs): i for i, issue in enumerate(issues)}
+            for f in as_completed(futures):
+                i = futures[f]
+                try:
+                    results[i] = f.result()
+                except Exception:
+                    logger.exception("Retrieval failed for issue: %s", issues[i])
+                    results[i] = {"issue": issues[i], "queries": [], "coverage": 0.0, "chunks": []}
+        return results
     @staticmethod
     def _get_chunk_text(chunk: Evidence) -> str:
         return str(chunk.text or "")

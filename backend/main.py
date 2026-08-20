@@ -51,7 +51,8 @@ _chroma = None
 _collection = None
 
 try:
-    _embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3", device="cpu"))
+    _embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-m3")
+                                       , device="cpu")
     ChromaService.initialize()
     _collection = ChromaService.get_collection()
     print("CHROMA_DIR:", CHROMA_DIR)
