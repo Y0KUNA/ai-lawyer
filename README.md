@@ -63,7 +63,6 @@ backend/
       tools/                 tool wrapper cho agent
       services/               logic nghiệp vụ (RAG, rerank, HyDE, normalize...)
   fine-tune/                script/tài nguyên fine-tune (nếu có)
-  evaluate_retrieval_pipeline.py   script đánh giá pipeline truy hồi
 
 frontend/
   src/
@@ -71,13 +70,23 @@ frontend/
     components/            ChatWindow, ChatInput, MessageBubble, SideBar, LoadingIndicator
   Dockerfile, nginx.conf
 
-rag/
-  index_documen.py          script index văn bản luật vào ChromaDB
-  main.py
+scripts/                    Các tác vụ chạy thủ công, không phải runtime
+  indexing/                 Nạp corpus đã chunk vào ChromaDB
+  data_preparation/         Sinh RAG corpus từ nguồn dữ liệu luật
+  evaluation/               Đánh giá chất lượng retrieval
+  benchmarking/             Đo latency/throughput endpoint
+  diagnostics/              Kiểm tra môi trường cục bộ
 
 data/
-  chunk.py, chunk_new.py, chunk_builder.py   script tiền xử lý/chunk văn bản luật
-  law-clean/, rag_chunks/    dữ liệu luật đã làm sạch / đã chunk
+  law-clean/, rag_chunks/    dữ liệu luật nguồn, đã làm sạch và đã chunk
+
+tests/
+  fixtures/                 Test cases dùng lại cho các bài đánh giá
+
+artifacts/                  Kết quả benchmark/evaluation sinh cục bộ (gitignore)
+
+rag/
+  main.py                   Prototype RAG cũ, tách biệt với backend đang chạy
 
 docker-compose.yml         chạy ollama + backend + frontend cùng lúc
 ```
@@ -100,11 +109,19 @@ SYSTEM_PROMPT={"role":"system","content":"You are a legal assistant."}
 CHROMA_PATH=../chroma_db
 EMBED_MODEL=BAAI/bge-m3
 OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=gemma4:e2b
+OLLAMA_WARMUP_ENABLED=true
+OLLAMA_KEEP_ALIVE=30m
 EXA_API_KEY=your_exa_api_key   # nếu dùng exa_fallback_tool
 ```
 
 Nếu không đặt `SYSTEM_PROMPT`, backend dùng prompt luật sư tiếng Việt mặc định
 được hard-code sẵn trong `main.py`.
+
+Khi khởi động, backend chờ Ollama sẵn sàng rồi gửi một request không sinh token
+để nạp `OLLAMA_MODEL` vào RAM/VRAM. Vì vậy request `/chat` đầu tiên không phải
+chịu thời gian load model. Model phải được pull trước (`ollama pull gemma4:e2b`);
+nếu Ollama chưa sẵn sau 120 giây, backend vẫn khởi động và ghi cảnh báo.
 
 ## Cài đặt & chạy (thủ công)
 
@@ -178,12 +195,14 @@ Health check, trả về `{"status": "ok"}`.
 ## Dữ liệu & Retrieval
 
 - Văn bản luật gốc/đã xử lý nằm trong `data/` (`law-clean/`, `rag_chunks/`).
-- `rag/index_documen.py` dùng để embed và nạp chunk vào ChromaDB.
+- `scripts/indexing/load_chroma_bge_m3.py` dùng để embed và nạp chunk vào ChromaDB.
 - Có 2 thư mục ChromaDB trong repo (`chroma_db/` ở root và
   `backend/chroma_db/`) — kiểm tra biến `CHROMA_PATH` để biết backend đang
   trỏ vào thư mục nào trước khi debug retrieval.
-- `backend/evaluate_retrieval_pipeline.py` dùng để đánh giá chất lượng pipeline
+- `scripts/evaluation/evaluate_retrieval_pipeline.py` dùng để đánh giá chất lượng pipeline
   truy hồi (coverage, độ chính xác trích dẫn...).
+- Xem `docs/PROJECT_STRUCTURE.md` để biết vị trí mã runtime, script hỗ trợ,
+  fixture và artefact sinh cục bộ.
 
 ## Ghi chú / vấn đề đã biết
 

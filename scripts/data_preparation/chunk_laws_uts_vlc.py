@@ -35,7 +35,8 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 # ─── CẤU HÌNH ─────────────────────────────────────────────────────────────────
-OUTPUT_DIR = Path("data/rag_chunks_uts_vlc")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+OUTPUT_DIR = REPO_ROOT / "data" / "rag_chunks_uts_vlc"
 MAX_CHUNK_CHARS = 1500   # Độ dài tối đa mỗi chunk (ký tự)
 OVERLAP_CHARS   = 150    # Overlap giữa các chunk
 

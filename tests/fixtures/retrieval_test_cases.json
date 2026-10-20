@@ -1,0 +1,50 @@
+[
+  {
+    "issue": "Hợp đồng lao động thử việc có thời hạn tối đa bao lâu?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["thử việc", "thời hạn"]
+  },
+  {
+    "issue": "Người lao động bị sa thải trái pháp luật thì được bồi thường như thế nào?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["sa thải", "bồi thường"]
+  },
+  {
+    "issue": "Điều kiện để được ly hôn đơn phương là gì?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["ly hôn", "đơn phương"]
+  },
+  {
+    "issue": "Thời hiệu khởi kiện tranh chấp hợp đồng dân sự là bao lâu?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["thời hiệu", "hợp đồng dân sự"]
+  },
+  {
+    "issue": "Điều kiện để được cấp Giấy chứng nhận quyền sử dụng đất là gì?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["giấy chứng nhận", "quyền sử dụng đất"]
+  },
+  {
+    "issue": "Thời hiệu để người thừa kế yêu cầu chia di sản là bao lâu?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["thừa kế", "di sản"]
+  },
+  {
+    "issue": "Bên nhận đặt cọc từ chối giao kết hợp đồng thì phải trả lại tiền đặt cọc như thế nào?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["đặt cọc"]
+  },
+  {
+    "issue": "Người lao động tham gia bảo hiểm xã hội bắt buộc được hưởng những chế độ nào?",
+    "expected_law_code": null,
+    "expected_article": null,
+    "expected_keywords": ["bảo hiểm xã hội", "chế độ"]
+  }
+]

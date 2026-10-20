@@ -37,11 +37,9 @@ from datasets import load_dataset
 DATASET_NAME = "undertheseanlp/UTS_VLC"
 SPLIT = "2026"
 
-# Anchor to this script's location, not the current working directory, so
-# the output folder is always in the same place regardless of where/how
-# you launch the script (terminal, IDE run button, etc.).
-BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = BASE_DIR / "rag_chunks_uts_v2"
+# Always write generated datasets under data/, independent of the launch cwd.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+OUTPUT_DIR = REPO_ROOT / "data" / "rag_chunks_uts_v2"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MAX_DOCS = None
 

@@ -187,3 +187,12 @@ __pycache__/
 *.jsonl
 *.json
 *.txt
+
+# Versioned input fixtures (generated JSON stays ignored).
+!tests/fixtures/*.json
+
+# Runtime databases, logs and generated evaluation outputs
+chroma_db/
+backend/chroma_db/
+backend/logs/
+artifacts/

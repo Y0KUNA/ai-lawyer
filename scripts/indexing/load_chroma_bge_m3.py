@@ -18,8 +18,9 @@ from sentence_transformers import SentenceTransformer
 # ============================================================
 # CONFIG
 # ============================================================
-JSONL_PATH = Path("D:\\Huy\\AI-Lawyer\\ai-lawyer\\data\\rag_chunks_uts_v2\\rag_corpus.jsonl")
-CHROMA_DIR = Path("D:/Huy/AI-Lawyer/ai-lawyer/chroma_db")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+JSONL_PATH = REPO_ROOT / "data" / "rag_chunks_uts_v2" / "rag_corpus.jsonl"
+CHROMA_DIR = REPO_ROOT / "chroma_db"
 COLLECTION_NAME = "luat_vn"
 MODEL_NAME = "BAAI/bge-m3"
 BATCH_SIZE = 32          # tune down if you hit OOM on GPU/CPU

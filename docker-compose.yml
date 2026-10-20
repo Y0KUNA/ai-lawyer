@@ -15,6 +15,9 @@ services:
       - "8000:8000"
     environment:
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: gemma4:e2b
+      OLLAMA_WARMUP_ENABLED: "true"
+      OLLAMA_KEEP_ALIVE: 30m
       CHROMA_PATH: /app/chroma_db
       EMBED_MODEL: BAAI/bge-m3
       HF_HOME: /root/.cache/huggingface

@@ -13,14 +13,12 @@ Script này KHÔNG đi qua FastAPI /chat, mà gọi thẳng service bằng
 Python để đo chính xác retrieval quality + latency từng pipeline,
 tách biệt hoàn toàn khỏi tốc độ sinh text của LLM cuối cùng.
 
-CÁCH CHẠY (bắt buộc chạy từ thư mục backend/, vì code gốc dùng
-import kiểu `from crew.src.lawyers...` dựa vào cwd):
+CÁCH CHẠY (từ thư mục gốc của repository):
 
-  cd ai-lawyer/backend
-  pip install -r requirements.txt --break-system-packages
+  cd ai-lawyer
+  pip install -r backend/requirements.txt --break-system-packages
   pip install crewai crewai-tools --break-system-packages   # nếu chưa có
-  # đặt file này vào thư mục backend/ rồi chạy:
-  python evaluate_retrieval_pipeline.py --test-file retrieval_test_cases.json
+  python scripts/evaluation/evaluate_retrieval_pipeline.py
 
 Yêu cầu Ollama đang chạy (dùng cho HyDE) và ChromaDB đã có dữ liệu
 (CHROMA_PATH trỏ đúng, mặc định ../chroma_db theo chroma_service.py).
@@ -37,14 +35,16 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# ── Cho phép import `crew.src.lawyers...` giống hệt cách main.py làm ──
-sys.path.insert(0, str(Path(__file__).parent))
+# ── Cho phép import `crew.src.lawyers...` giống hệt cách backend/main.py làm ──
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_DIR = REPO_ROOT / "backend"
+sys.path.insert(0, str(BACKEND_DIR))
 
 # ── Đọc .env giống hệt main.py để lấy đúng CHROMA_PATH, EMBEDDING_MODEL... ──
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(BACKEND_DIR / ".env")
 
-DEFAULT_TEST_FILE = "retrieval_test_cases.json"
+DEFAULT_TEST_FILE = REPO_ROOT / "tests" / "fixtures" / "retrieval_test_cases.json"
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")  # sửa nếu tên model khác
 DEFAULT_OLLAMA_HOST = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -258,7 +258,7 @@ def main():
     parser.add_argument("--coverage-threshold", type=float, default=0.5)
     parser.add_argument("--chroma-path", default=None,
                          help="Chỉ định thủ công đường dẫn chroma_db nếu .env không có/không đúng")
-    parser.add_argument("--output", default="retrieval_eval_results.json")
+    parser.add_argument("--output", default=REPO_ROOT / "artifacts" / "evaluation" / "retrieval_eval_results.json")
     args = parser.parse_args()
 
     with open(args.test_file, "r", encoding="utf-8") as f:
@@ -284,9 +284,11 @@ def main():
         indent=2, ensure_ascii=False,
     ))
 
-    with open(args.output, "w", encoding="utf-8") as f:
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
-    print(f"\n✅ Đã lưu chi tiết vào {args.output}")
+    print(f"\n✅ Đã lưu chi tiết vào {output_path}")
 
 
 if __name__ == "__main__":
